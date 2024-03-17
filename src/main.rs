@@ -1,21 +1,27 @@
+mod id;
 mod message;
-
+mod model;
+mod util;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use message::AuthenticationMessage;
 use tokio::time::{interval, sleep};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use yrs::{Doc, GetString, ReadTxn, StateVector, Text, Transact, Update};
+use yrs::Doc;
 
-use crate::message::{
-    insert_content_message, next_step, IncomingMessage, MessageDecode, MessageEncode, MessageType,
+use crate::{
+    message::{insert_content_message, next_step, IncomingMessage, MessageDecode, MessageEncode},
+    util::to_hex_string,
 };
+
+#[derive(Debug, Clone)]
 struct DocInfo {
     token: String,
     document_code: String,
     url: String,
     target_block_id: String,
+    content: String,
 }
 
 struct Client {
@@ -26,41 +32,29 @@ struct Client {
 async fn main() {
     // This is running on a core thread.
     let info = DocInfo {
-        token: "fEecue-ZXhhvcyLLHN9eEH7bB9I".to_string(),
-        document_code: "Page::50125935323648::DEFAULT_PAGE".to_string(),
-        url: "ws://127.0.0.1:3110".to_string(),
-        target_block_id: "Et87mcQWLx".to_string(),
+        token: "93IY3ggAycFpo28dMiLcte9hz_8".to_string(),
+        document_code: "Page::50150290368256::DEFAULT_PAGE".to_string(),
+        url: "ws://10.5.23.192:3110".to_string(),
+        target_block_id: "CHVGzkq_2wO-v2Ezw9lzv".to_string(),
+        content: "".to_string(),
     };
 
-    let blocking_task = tokio::task::spawn_blocking(|| {
-        // This is running on a blocking thread.
-        // Blocking here is ok.
-    });
+    let mut handles = Vec::new(); // 用于存放所有任务的句柄
 
-    // We can wait for the blocking task like this:
-    // If the blocking task panics, the unwrap below will propagate the
-    // panic.
-    start_client(&info).await;
-    blocking_task.await.unwrap();
-}
+    for i in 0..50 {
+        let mut info = info.clone();
+        info.content = format!("thread{} ", i);
+        let handle = tokio::spawn(async move {
+            sleep(Duration::from_secs_f64((i as f64) * 0.5)).await;
+            start_client(&info).await;
+        });
+        handles.push(handle);
+    }
 
-fn to_hex_string(data: &Vec<u8>) -> String {
-    let hex_groups = data
-        .chunks(2) // 每2个字节作为一组
-        .map(|chunk| {
-            chunk
-                .iter()
-                .map(|byte| format!("{:02X}", byte))
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>();
-
-    // 每8组（总共16个字节）换行
-    hex_groups
-        .chunks(8) // 每8个组为一行
-        .map(|line| line.join(" "))
-        .collect::<Vec<_>>()
-        .join("\n")
+    // 等待所有异步任务完成
+    for handle in handles {
+        handle.await.expect("Task panicked");
+    }
 }
 
 async fn start_client(info: &DocInfo) {
@@ -95,13 +89,13 @@ async fn start_client(info: &DocInfo) {
                     Message::Binary(bin) => {
                         println!("{}", to_hex_string(&bin));
                         let msg = IncomingMessage::decode(&bin);
-                        println!(
-                            "{:?}, {:?} {} {}",
-                            msg.document_code,
-                            msg.message_type,
-                            msg.cur.buf.len(),
-                            msg.cur.next
-                        );
+                        // println!(
+                        //     "{:?}, {:?} {} {}",
+                        //     msg.document_code,
+                        //     msg.message_type,
+                        //     msg.cur.buf.len(),
+                        //     msg.cur.next
+                        // );
 
                         match next_step(&msg.message_type, &info, &mut client) {
                             Some(buf) => {
@@ -148,7 +142,7 @@ async fn start_client(info: &DocInfo) {
         interval_timer.tick().await; // 等待下一个间隔
                                      // 准备你要发送的二进制消息
         count += 1;
-        if count > 300 {
+        if count > 100 {
             break;
         }
         let buf = insert_content_message(&info, &mut client).unwrap();

@@ -179,9 +179,7 @@ pub fn insert_content_message(info: &DocInfo, client: &mut Client) -> Result<Vec
         .cast::<TextRef>()
         .unwrap();
 
-    println!("text_prop: {:?}", text_prop.get_string(&txn));
-
-    text_prop.insert(&mut txn, 0, "2");
+    text_prop.insert(&mut txn, 0, &info.content);
 
     txn.commit();
 
