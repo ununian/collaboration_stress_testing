@@ -29,12 +29,12 @@ pub struct DocClient {
 }
 
 impl DocClient {
-    pub fn new(info: DocInfo) -> Self {
+    pub fn new(info: &DocInfo) -> Self {
         let doc = Doc::new();
 
         DocClient {
             doc: Arc::new(doc),
-            info,
+            info: info.clone(),
         }
     }
 

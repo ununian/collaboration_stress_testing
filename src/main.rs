@@ -6,68 +6,185 @@ mod query;
 mod thread;
 mod util;
 
-use std::sync::Mutex;
+use std::borrow::Borrow;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
+use nanoid::nanoid;
+use tokio::sync::mpsc::channel;
 use tokio::time::interval;
 use tokio::{time::sleep, time::Duration};
 
 use client::{DocClient, DocInfo};
-use yrs::types::text::YChange;
-use yrs::types::Attrs;
-use yrs::{Any, Text, Transact, Value};
-use yrs::{GetString, Map};
+use yrs::types::ToJson;
+use yrs::{DeepObservable, GetString, Map, Observable};
+use yrs::{Text, TextPrelim, Transact, Value};
 
 use crate::query::query::DocQuery;
 
+struct Peer {
+    id: String,
+}
+
 #[tokio::main]
 async fn main() {
-    let info = DocInfo {
+    let info = Arc::new(DocInfo {
         token: "167sD7a3eiDL3DZ4zjOrjzlGQ2g".to_string(),
-        document_code: "Page::50304982168064::DEFAULT_PAGE".to_string(),
+        document_code: "Page::50305026731776::DEFAULT_PAGE".to_string(),
         url: "ws://10.5.23.192:8896/aio".to_string(),
-    };
+    });
 
-    let client = DocClient::new(info);
+    let id = Arc::new(nanoid!());
 
-    let handle = tokio::spawn(async move {
+    let info1 = info.clone();
+    let id1 = id.clone();
+    let handle1 = tokio::spawn(async move {
+        let client = DocClient::new(&info1);
         client
-            .init(|doc| {
-                println!("同步完成");
+            .init(move |doc| {
+                println!("同步完成111");
                 {
+                    let query = DocQuery::new(doc.clone());
+
+                    let prop = query
+                        .blocks()
+                        .add_block(id1.as_str(), "wq:paragraph", |mut txn, prop| {
+                            prop.insert(&mut txn, "prop:text", TextPrelim::new(""));
+                        })
+                        .prop("prop:text")
+                        .get();
+
+                    let mut text = match prop {
+                        Some(Value::YText(text)) => text,
+                        _ => panic!("没有找到Text"),
+                    };
+
+                    let count = Arc::new(Mutex::new(0));
+
+                    let (send, mut recv) = channel::<String>(1024);
+                    let id1 = id1.clone();
                     tokio::spawn(async move {
-                        let mut interval_timer = interval(Duration::from_secs_f64(1f64));
-                        let mut count = 0;
-
-                        loop {
-                            interval_timer.tick().await; // 等待下一个间隔
-                                                         // 准备你要发送的二进制消息
-                            count += 1;
-                            if count > 100 {
-                                break;
-                            }
+                        while let Some(msg) = recv.recv().await {
                             let query = DocQuery::new(doc.clone());
-                            let paragraph = query.blocks().flavour("wq:paragraph").first().unwrap();
-                            let firstParagraph = match paragraph.prop("prop:text").get() {
-                                Some(Value::YText(text)) => Some(text),
-                                _ => None,
+                            let block = query.blocks().id(id1.as_str());
+                            let prop = block.and_then(|block| block.prop("prop:text").get());
+                            let text = match prop {
+                                Some(Value::YText(text)) => text,
+                                _ => panic!("没有找到Text"),
                             };
-                            {
-                                let mut txn = doc.transact_mut();
-                                let bold = Attrs::from([("bold".into(), true.into())]);
-
-                                if let Some(a) = firstParagraph {
-                                    a.insert(&mut txn, 2, "aa");
-                                    a.format(&mut txn, 2, 2, bold)
-                                }
-                            }
+                            let mut txn = doc.transact_mut();
+                            text.push(&mut txn, msg.as_str());
                         }
+                    });
+
+                    let send2 = send.clone();
+                    text.observe(move |txn, event| {
+                        let text = event.target().get_string(txn);
+                        let mut count = count.lock().unwrap();
+                        if text.ends_with(format!("pong_{} ", *count).as_str()) {
+                            *count += 1;
+                            let count = count.clone();
+                            let send = send2.clone();
+                            tokio::spawn(async move {
+                                let _ = send.send(format!("ping_{} ", count)).await;
+                            });
+                        }
+                    });
+
+                    let first_sender = send.clone();
+                    tokio::spawn(async move {
+                        let _ = first_sender.send("ping_0 ".to_string()).await;
                     });
                 }
             })
             .await;
     });
 
-    handle.await.expect("Task panicked");
+    let info2 = info.clone();
+    let id2 = id.clone();
+    let handle2 = tokio::spawn(async move {
+        let client = DocClient::new(&info2.clone());
+        client
+            .init(move |_| {
+                println!("同步完成222");
+            })
+            .await;
+        let doc = client.doc.clone();
+        let mut blocks = doc.get_or_insert_map("blocks");
+        let id2 = id2.clone();
+        let doc = doc.clone();
+        let is_listener = Arc::new(Mutex::new(false));
+        {
+            let txn = doc.transact();
+            println!("blocks: {:?}", blocks.get(&txn, id2.as_str()));
+        }
+        blocks.observe_deep(move |_, _| {
+            println!("监听到Block变化111");
+
+            if *is_listener.lock().unwrap() {
+                return;
+            }
+
+            let query = DocQuery::new(doc.clone());
+            let block = query.blocks().id(id2.as_str());
+            if block.is_none() {
+                return;
+            }
+
+            println!("监听到Block变化222");
+
+            *is_listener.lock().unwrap() = true;
+
+            let prop = block.unwrap().prop("prop:text").get();
+
+            let mut text = match prop {
+                Some(Value::YText(text)) => text,
+                _ => panic!("没有找到Text"),
+            };
+
+            let count = Arc::new(Mutex::new(0));
+
+            let (send, mut recv) = channel::<String>(1024);
+            let id2 = id2.clone();
+
+            let doc = doc.clone();
+            tokio::spawn(async move {
+                while let Some(msg) = recv.recv().await {
+                    let query = DocQuery::new(doc.clone());
+                    let block = query.blocks().id(id2.as_str());
+                    let prop = block.and_then(|block| block.prop("prop:text").get());
+                    let text = match prop {
+                        Some(Value::YText(text)) => text,
+                        _ => panic!("没有找到Text"),
+                    };
+                    let mut txn = doc.transact_mut();
+                    text.push(&mut txn, msg.as_str());
+                }
+            });
+
+            text.observe(move |txn, event| {
+                let text = event.target().get_string(txn);
+                let mut count = count.lock().unwrap();
+                if text.ends_with(format!("ping_{} ", *count).as_str()) {
+                    *count += 1;
+                    let count = count.clone();
+                    let send = send.clone();
+                    tokio::spawn(async move {
+                        let _ = send.send(format!("pong_{} ", count)).await;
+                    });
+                }
+            });
+        });
+
+        loop {
+            println!("任务运行中...");
+            // 假设这里有一些有用的工作。
+            sleep(Duration::from_secs(1)).await;
+        }
+    });
+
+    handle1.await.expect("Task1 panicked");
+    handle2.await.expect("Task2 panicked");
 
     sleep(Duration::from_secs(1)).await;
 

@@ -1,16 +1,22 @@
 use std::{rc::Rc, sync::Arc};
 
-use yrs::{block::Prelim, Any, Doc, Map, MapRef, Transact, Transaction, Value};
+use yrs::{
+    block::Prelim, Any, Array, ArrayPrelim, Doc, Map, MapPrelim, MapRef, TextPrelim, Transact,
+    Transaction, Value,
+};
 
+#[derive(Clone)]
 pub struct DocQuery {
     doc: Arc<Doc>,
 }
 
+#[derive(Clone)]
 pub struct BlockMapQuery {
     doc: Arc<Doc>,
     map: MapRef,
 }
 
+#[derive(Clone)]
 pub struct BlocksQuery {
     doc: Arc<Doc>,
     blocks: Vec<MapRef>,
@@ -34,13 +40,6 @@ impl DocQuery {
         }
     }
 }
-
-/*
-let query = BlockMapQuery::new(doc);
-let a_paragraph = query.blocks().id("one_id");
-let paragraphs: = query.blocks().flavour("wq:paragraph");
-*/
-
 impl BlockMapQuery {
     pub fn id(&self, id: &str) -> Option<BlockQuery> {
         match self.map.get(&self.doc.transact(), id) {
@@ -49,6 +48,49 @@ impl BlockMapQuery {
                 block,
             }),
             _ => None,
+        }
+    }
+
+    pub fn get_root_note_block(&self) -> Option<BlockQuery> {
+        self.flavour("wq:note").first()
+    }
+
+    pub fn add_block<F>(&self, id: &str, flavor: &str, init: F) -> BlockQuery
+    where
+        F: FnOnce(yrs::TransactionMut<'_>, MapRef) + 'static,
+    {
+        let note = self.get_root_note_block();
+        if note.is_none() {
+            panic!("没有找到根节点");
+        }
+        let mut txn = self.doc.transact_mut();
+        let map: MapRef = self.map.insert(
+            &mut txn,
+            id,
+            MapPrelim::from([
+                ("sys:id".to_string(), Any::String(id.into())),
+                ("sys:version".to_string(), Any::Number(1.into())),
+                ("sys:flavour".to_string(), Any::String(flavor.into())),
+            ]),
+        );
+
+        map.insert(&mut txn, "sys:children", ArrayPrelim::default());
+
+        let children = note.unwrap().block.get(&txn, "sys:children");
+
+        match children {
+            Some(Value::YArray(array)) => array.insert(&mut txn, 0, Any::String(id.into())),
+            _ => panic!("插入失败"),
+        };
+
+        init(txn, map);
+
+        BlockQuery {
+            doc: self.doc.clone(),
+            block: match self.map.get(&self.doc.transact(), id) {
+                Some(Value::YMap(block)) => block,
+                _ => panic!("插入失败"),
+            },
         }
     }
 
