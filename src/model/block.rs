@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use crate::id::next_id;
-use yrs::{block::Prelim, Any, Doc, Map, MapPrelim, MapRef, Transact, TransactionMut};
+use yrs::{block::Prelim, Any, Doc, Map, MapPrelim, MapRef, Transact, Transaction, TransactionMut};
 
 pub struct BlockBuilder<'txn> {
     id: String,

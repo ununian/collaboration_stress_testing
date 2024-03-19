@@ -1,4 +1,4 @@
-use std::vec;
+use std::{sync::Arc, vec};
 
 use futures_util::{stream::SplitSink, SinkExt};
 use tokio::net::TcpStream;
@@ -13,7 +13,7 @@ use yrs::{
     Doc, GetString, Map, MapRef, ReadTxn, StateVector, Text, TextRef, Transact, Update,
 };
 
-use crate::{Client, DocInfo};
+use crate::client::DocInfo;
 
 pub trait MessageEncode {
     fn encode(&self) -> Vec<u8>;
@@ -61,7 +61,7 @@ impl MessageEncode for AuthenticationMessage {
 
 pub struct SyncStepOneMessage {
     pub document_code: String,
-    pub doc: Doc,
+    pub doc: Arc<Doc>,
 }
 
 impl MessageEncode for SyncStepOneMessage {
@@ -74,6 +74,28 @@ impl MessageEncode for SyncStepOneMessage {
 
         let sv = &self.doc.transact().state_vector().encode_v1();
         buf.write_buf(sv);
+
+        buf.to_vec()
+    }
+}
+
+pub struct SyncStepTwoMessage {
+    pub document_code: String,
+    pub remote_state: Vec<u8>,
+    pub doc: Arc<Doc>,
+}
+
+impl MessageEncode for SyncStepTwoMessage {
+    fn encode(&self) -> Vec<u8> {
+        let mut buf = vec![];
+        buf.write_string(&self.document_code);
+        buf.write_var(0); // message type Sync
+
+        buf.write_var(1); // sync step 2
+        let state_vector = StateVector::decode_v1(&self.remote_state).unwrap();
+
+        let diff = self.doc.transact().encode_state_as_update_v1(&state_vector);
+        buf.write_buf(&diff);
 
         buf.to_vec()
     }
@@ -137,37 +159,50 @@ impl<'a> MessageDecode<'a> for IncomingMessage<'a> {
     }
 }
 
-pub fn next_step(msg: &MessageType, info: &DocInfo, client: &mut Client) -> Option<Vec<u8>> {
-    match msg {
-        MessageType::Auth(Ok(scope)) => {
-            let doc = &client.doc;
-            let msg = SyncStepOneMessage {
-                document_code: info.document_code.clone(),
-                doc: doc.clone(),
-            };
+impl MessageType {
+    pub fn handle_message(&self, info: &DocInfo, doc: &Arc<Doc>) -> Option<Vec<u8>> {
+        match self {
+            MessageType::Auth(Ok(scope)) => {
+                let msg = SyncStepOneMessage {
+                    document_code: info.document_code.clone(),
+                    doc: doc.clone(),
+                };
 
-            Some(msg.encode())
-        }
-        MessageType::Sync(step) => match step {
-            SyncStep::One(_) => None,
-            SyncStep::Two(update) => {
-                let mut transact = client.doc.transact_mut();
-                transact.apply_update(Update::decode_v1(&update).unwrap());
-
-                Some(vec![])
+                Some(msg.encode())
             }
-            SyncStep::Update(_) => None,
-        },
+            MessageType::Sync(step) => match step {
+                SyncStep::One(sv) => {
+                    let msg = SyncStepTwoMessage {
+                        document_code: info.document_code.clone(),
+                        remote_state: sv.clone(),
+                        doc: doc.clone(),
+                    };
 
-        _ => None,
+                    Some(msg.encode())
+                }
+                SyncStep::Two(update) => {
+                    let mut transact = doc.transact_mut();
+                    transact.apply_update(Update::decode_v1(&update).unwrap());
+
+                    None
+                }
+                SyncStep::Update(update) => {
+                    let mut transact = doc.transact_mut();
+                    transact.apply_update(Update::decode_v1(&update).unwrap());
+
+                    None
+                }
+            },
+            _ => None,
+        }
     }
 }
 
-pub fn insert_content_message(info: &DocInfo, client: &mut Client) -> Result<Vec<u8>, String> {
-    let blocks = client.doc.get_or_insert_map("blocks");
-    let mut txn = client.doc.transact_mut();
+pub fn insert_content_message(info: &DocInfo, doc: &mut Doc) -> Result<Vec<u8>, String> {
+    let blocks = doc.get_or_insert_map("blocks");
+    let mut txn = doc.transact_mut();
     let state = txn.state_vector();
-    let target_block = blocks.get(&txn, &info.target_block_id);
+    let target_block = blocks.get(&txn, "4");
     if target_block.is_none() {
         return Err("Target block not found".to_string());
     }
@@ -179,7 +214,7 @@ pub fn insert_content_message(info: &DocInfo, client: &mut Client) -> Result<Vec
         .cast::<TextRef>()
         .unwrap();
 
-    text_prop.insert(&mut txn, 0, &info.content);
+    text_prop.insert(&mut txn, 0, "asd");
 
     txn.commit();
 
