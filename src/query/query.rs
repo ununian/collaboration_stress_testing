@@ -35,7 +35,7 @@ impl DocQuery {
     pub fn blocks(&self) -> BlockMapQuery {
         let blocks = self.doc.get_or_insert_map("blocks");
         BlockMapQuery {
-            doc: self.doc.clone(),
+            doc: Arc::clone(&self.doc),
             map: blocks,
         }
     }
@@ -44,7 +44,7 @@ impl BlockMapQuery {
     pub fn id(&self, id: &str) -> Option<BlockQuery> {
         match self.map.get(&self.doc.transact(), id) {
             Some(Value::YMap(block)) => Some(BlockQuery {
-                doc: self.doc.clone(),
+                doc: Arc::clone(&self.doc),
                 block,
             }),
             _ => None,
@@ -64,6 +64,7 @@ impl BlockMapQuery {
             panic!("没有找到根节点");
         }
         let mut txn = self.doc.transact_mut();
+
         let map: MapRef = self.map.insert(
             &mut txn,
             id,
@@ -76,7 +77,10 @@ impl BlockMapQuery {
 
         map.insert(&mut txn, "sys:children", ArrayPrelim::default());
 
-        let children = note.unwrap().block.get(&txn, "sys:children");
+        let note = note.unwrap();
+        let children = note.block.get(&txn, "sys:children");
+
+        println!("note: {:?}", note.block.get(&txn, "sys:id"));
 
         match children {
             Some(Value::YArray(array)) => array.insert(&mut txn, 0, Any::String(id.into())),
@@ -86,7 +90,7 @@ impl BlockMapQuery {
         init(txn, map);
 
         BlockQuery {
-            doc: self.doc.clone(),
+            doc: Arc::clone(&self.doc),
             block: match self.map.get(&self.doc.transact(), id) {
                 Some(Value::YMap(block)) => block,
                 _ => panic!("插入失败"),
@@ -114,7 +118,7 @@ impl BlockMapQuery {
             .collect();
 
         BlocksQuery {
-            doc: self.doc.clone(),
+            doc: Arc::clone(&self.doc),
             blocks,
         }
     }
@@ -130,7 +134,7 @@ impl BlocksQuery {
         self.blocks
             .iter()
             .map(|block| PropQuery {
-                doc: self.doc.clone(),
+                doc: Arc::clone(&self.doc),
                 block: block.clone(),
                 key: key.to_string(),
             })
@@ -139,7 +143,7 @@ impl BlocksQuery {
 
     pub fn first(&self) -> Option<BlockQuery> {
         self.blocks.first().map(|block| BlockQuery {
-            doc: self.doc.clone(),
+            doc: Arc::clone(&self.doc),
             block: block.clone(),
         })
     }
@@ -148,7 +152,7 @@ impl BlocksQuery {
 impl BlockQuery {
     pub fn prop(&self, key: &str) -> PropQuery {
         PropQuery {
-            doc: self.doc.clone(),
+            doc: Arc::clone(&self.doc),
             block: self.block.clone(),
             key: key.to_string(),
         }

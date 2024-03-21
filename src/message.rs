@@ -160,12 +160,12 @@ impl<'a> MessageDecode<'a> for IncomingMessage<'a> {
 }
 
 impl MessageType {
-    pub fn handle_message(&self, info: &DocInfo, doc: &Arc<Doc>) -> Option<Vec<u8>> {
+    pub fn handle_message(&self, info: &DocInfo, doc: Arc<Doc>, tag: &String) -> Option<Vec<u8>> {
         match self {
             MessageType::Auth(Ok(scope)) => {
                 let msg = SyncStepOneMessage {
                     document_code: info.document_code.clone(),
-                    doc: doc.clone(),
+                    doc: Arc::clone(&doc),
                 };
 
                 Some(msg.encode())
@@ -175,7 +175,7 @@ impl MessageType {
                     let msg = SyncStepTwoMessage {
                         document_code: info.document_code.clone(),
                         remote_state: sv.clone(),
-                        doc: doc.clone(),
+                        doc: Arc::clone(&doc),
                     };
 
                     Some(msg.encode())
@@ -189,7 +189,7 @@ impl MessageType {
                 SyncStep::Update(update) => {
                     let mut transact = doc.transact_mut();
                     transact.apply_update(Update::decode_v1(&update).unwrap());
-
+                    println!("{} 接收到 Diff ，更新文档", tag);
                     None
                 }
             },

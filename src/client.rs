@@ -38,7 +38,7 @@ impl DocClient {
         }
     }
 
-    pub async fn init<F>(&self, on_synced: F)
+    pub async fn init<F>(&self, on_synced: F, tag: String)
     where
         F: Fn(Arc<Doc>) + 'static + Send + Sync,
     {
@@ -58,18 +58,29 @@ impl DocClient {
 
         let info = self.info.clone();
 
-        self.doc.get_or_insert_map("blocks").observe_deep(|_, e| {
-            println!("观察到变化");
-            e.iter().for_each(|e| {
-                println!("{:?}", e.path());
-            });
-        });
+        {
+            let tag = tag.clone();
+            self.doc
+                .get_or_insert_map("blocks")
+                .observe_deep(move |_, e| {
+                    println!("{} 观察到变化", &tag);
+                    e.iter().for_each(|e| {
+                        println!("{:?}", e.path());
+                    });
+                });
+        }
 
         let document_code = info.document_code.clone();
         let update_sender = send.clone();
-        let doc_subscription = {
-            self.doc
+
+        println!("{} 开始监听更新", &tag);
+
+        {
+            let tag = tag.clone();
+            let _ = &self
+                .doc
                 .observe_update_v1(move |_, event| {
+                    println!("{} 观察到更新", &tag);
                     // https://github.com/y-crdt/y-sync/blob/56958e83acfd1f3c09f5dd67cf23c9c72f000707/src/net/broadcast.rs#L47-L52
                     let msg = UpdateMessage {
                         update: event.update.clone(),
@@ -81,11 +92,12 @@ impl DocClient {
                         update_sender.send(msg.encode()).await.unwrap();
                     });
                 })
-                .unwrap()
-        };
+                .unwrap();
+        }
 
-        let doc = self.doc.clone();
+        let doc = Arc::clone(&self.doc);
         let send = send.clone();
+        let tag = tag.clone();
         tokio::spawn(async move {
             let auth_message = AuthenticationMessage {
                 token: (info.token).clone(),
@@ -98,7 +110,9 @@ impl DocClient {
                 match msg {
                     Message::Binary(bin) => {
                         let msg = IncomingMessage::decode(&bin);
-                        let response = msg.message_type.handle_message(&info, &doc);
+                        let response =
+                            msg.message_type
+                                .handle_message(&info, Arc::clone(&doc), &tag.clone());
 
                         if let Some(response) = response {
                             send.send(response).await.unwrap();
@@ -107,7 +121,7 @@ impl DocClient {
                         match msg.message_type {
                             MessageType::Sync(step) => match step {
                                 SyncStep::Two(_) => {
-                                    on_synced(doc.clone());
+                                    on_synced(Arc::clone(&doc));
                                 }
                                 _ => {}
                             },
@@ -125,7 +139,7 @@ impl DocClient {
     }
 
     // pub fn listen(&self) {
-    //     let doc = self.doc.clone();
+    //     let doc = self.Arc::clone(&doc)();
     //     let client = self.client.clone();
     //     tokio::spawn(async move {
     //         let (mut write, mut read) = client.split();
