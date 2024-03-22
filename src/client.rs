@@ -6,7 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use std::{
     any::Any,
     borrow::{Borrow, BorrowMut},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
 };
 use tokio::sync::mpsc::channel;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
@@ -25,117 +25,159 @@ pub struct DocInfo {
 
 pub struct DocClient {
     pub info: DocInfo,
-    pub doc: Arc<Doc>,
+    pub name: String,
+    pub doc: Doc,
 }
 
 impl DocClient {
-    pub fn new(info: &DocInfo) -> Self {
+    pub fn new(name: &str, info: &DocInfo) -> Self {
         let doc = Doc::new();
 
         DocClient {
-            doc: Arc::new(doc),
+            doc: doc,
+            name: name.to_string(),
             info: info.clone(),
         }
     }
 
-    pub async fn init<F>(&self, on_synced: F, tag: String)
-    where
-        F: Fn(Arc<Doc>) + 'static + Send + Sync,
-    {
-        let (ws_stream, _) = connect_async(&self.info.url)
-            .await
-            .expect("创建 WS 连接失败");
+    pub fn doc(&self) -> &Doc {
+        &self.doc
+    }
 
-        let (mut write, mut read) = ws_stream.split();
+    /// Returns a read-write reference to an underlying [Doc].
+    pub fn doc_mut(&mut self) -> &mut Doc {
+        &mut self.doc
+    }
 
-        let (send, mut recv) = channel(1024);
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 
-        tokio::spawn(async move {
-            while let Some(msg) = recv.recv().await {
-                let _ = write.send(Message::Binary(msg)).await;
-            }
-        });
-
-        let info = self.info.clone();
+    pub async fn auto_update(client: Arc<RwLock<Self>>) {
+        let r_client = client.read().unwrap();
+        let (ws_send, mut ws_recv) = channel(1024);
+        let (message_send, mut message_recv) = channel(1024);
 
         {
-            let tag = tag.clone();
-            self.doc
+            let (ws_stream, _) = connect_async(&r_client.info.url)
+                .await
+                .expect("创建 WS 连接失败");
+
+            let (mut write, mut read) = ws_stream.split();
+
+            tokio::spawn(async move {
+                while let Some(msg) = ws_recv.recv().await {
+                    write.send(msg).await.unwrap();
+                }
+            });
+
+            let message_send = message_send.clone();
+            tokio::spawn(async move {
+                while let Some(Ok(msg)) = read.next().await {
+                    message_send.send(msg).await;
+                }
+            });
+        }
+
+        {
+            let auth_message = AuthenticationMessage {
+                token: (&r_client.info.token).clone(),
+                document_code: (&r_client.info.document_code).clone(),
+            }
+            .encode();
+
+            if let Err(e) = message_send.try_send(Message::Binary(auth_message)) {
+                println!("发送认证消息失败: {:?}", e);
+            }
+        }
+
+        {
+            let name = r_client.name.clone();
+            &r_client
+                .doc()
                 .get_or_insert_map("blocks")
                 .observe_deep(move |_, e| {
-                    println!("{} 观察到变化", &tag);
+                    println!("{} 观察到 blocks 变化", name);
                     e.iter().for_each(|e| {
                         println!("{:?}", e.path());
                     });
                 });
         }
 
-        let document_code = info.document_code.clone();
-        let update_sender = send.clone();
-
-        println!("{} 开始监听更新", &tag);
-
         {
-            let tag = tag.clone();
-            let _ = &self
-                .doc
+            println!("{} 开始监听更新", &r_client.name());
+            let ws_send = ws_send.clone();
+            let name = r_client.name.clone();
+            let document_code = r_client.info.document_code.clone();
+            let _ = &r_client
+                .doc()
                 .observe_update_v1(move |_, event| {
-                    println!("{} 观察到更新", &tag);
-                    // https://github.com/y-crdt/y-sync/blob/56958e83acfd1f3c09f5dd67cf23c9c72f000707/src/net/broadcast.rs#L47-L52
+                    println!("{} 观察到更新", name);
                     let msg = UpdateMessage {
                         update: event.update.clone(),
                         document_code: document_code.clone(),
-                    };
+                    }
+                    .encode();
 
-                    let update_sender = update_sender.clone();
-                    tokio::spawn(async move {
-                        update_sender.send(msg.encode()).await.unwrap();
-                    });
+                    if let Err(e) = ws_send.try_send(Message::Binary(msg)) {
+                        println!("发送更新消息失败: {:?}", e);
+                    }
                 })
                 .unwrap();
         }
 
-        let doc = Arc::clone(&self.doc);
-        let send = send.clone();
-        let tag = tag.clone();
-        tokio::spawn(async move {
-            let auth_message = AuthenticationMessage {
-                token: (info.token).clone(),
-                document_code: info.document_code.clone(),
-            };
+        // while let Some(msg) = message_recv.recv().await {
+        //     match msg {
+        //         Message::Binary(bin) => {
+        //             let msg = IncomingMessage::decode(&bin);
+        //             let response = msg.message_type.handle_message(
+        //                 &r_client.info,
+        //                 r_client.doc(),
+        //                 r_client.name(),
+        //             );
 
-            send.send(auth_message.encode()).await.unwrap();
+        //             if let Some(response) = response {
+        //                 ws_send.send(Message::Binary(response)).await.unwrap();
+        //             }
+        //         }
+        //         _ => {
+        //             println!("未知消息类型");
+        //         }
+        //     }
+        // }
 
-            while let Some(Ok(msg)) = read.next().await {
-                match msg {
-                    Message::Binary(bin) => {
-                        let msg = IncomingMessage::decode(&bin);
-                        let response =
-                            msg.message_type
-                                .handle_message(&info, Arc::clone(&doc), &tag.clone());
+        // tokio::spawn(async move {
+        //     send.send(auth_message).await.unwrap();
 
-                        if let Some(response) = response {
-                            send.send(response).await.unwrap();
-                        }
+        //     while let Some(Ok(msg)) = read.next().await {
+        //         message_send.send(msg).await;
+        // match msg {
+        //     Message::Binary(bin) => {
 
-                        match msg.message_type {
-                            MessageType::Sync(step) => match step {
-                                SyncStep::Two(_) => {
-                                    on_synced(Arc::clone(&doc));
-                                }
-                                _ => {}
-                            },
-                            _ => {}
-                        }
-                    }
-                    _ => {
-                        println!("未知消息类型");
-                    }
-                }
-            }
-        })
-        .await
-        .unwrap();
+        // let msg = IncomingMessage::decode(&bin);
+        // let response =
+        //     msg.message_type
+        //         .handle_message(&info, r_client.doc(), r_client.name());
+
+        // if let Some(response) = response {
+        //     send.send(response).await.unwrap();
+        // }
+
+        // match msg.message_type {
+        //     MessageType::Sync(step) => match step {
+        //         SyncStep::Two(_) => {}
+        //         _ => {}
+        //     },
+        //     _ => {}
+        // }
+        //     }
+        //     _ => {
+        //         println!("未知消息类型");
+        //     }
+        // }
+        //     }
+        // })
+        // .await;
     }
 
     // pub fn listen(&self) {

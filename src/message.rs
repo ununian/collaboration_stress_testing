@@ -16,7 +16,7 @@ use yrs::{
 use crate::client::DocInfo;
 
 pub trait MessageEncode {
-    fn encode(&self) -> Vec<u8>;
+    fn encode(&self, doc: &Doc) -> Vec<u8>;
 }
 
 #[derive(Debug, Clone)]
@@ -46,8 +46,8 @@ pub struct AuthenticationMessage {
     pub document_code: String,
 }
 
-impl MessageEncode for AuthenticationMessage {
-    fn encode(&self) -> Vec<u8> {
+impl AuthenticationMessage {
+    pub fn encode(&self) -> Vec<u8> {
         let mut buf = vec![];
         buf.write_string(&self.document_code);
         buf.write_var(2); // message type Auth
@@ -61,18 +61,17 @@ impl MessageEncode for AuthenticationMessage {
 
 pub struct SyncStepOneMessage {
     pub document_code: String,
-    pub doc: Arc<Doc>,
 }
 
 impl MessageEncode for SyncStepOneMessage {
-    fn encode(&self) -> Vec<u8> {
+    fn encode(&self, doc: &Doc) -> Vec<u8> {
         let mut buf = vec![];
         buf.write_string(&self.document_code);
         buf.write_var(0); // message type Sync
 
         buf.write_var(0); // sync step 1
 
-        let sv = &self.doc.transact().state_vector().encode_v1();
+        let sv = doc.transact().state_vector().encode_v1();
         buf.write_buf(sv);
 
         buf.to_vec()
@@ -82,11 +81,10 @@ impl MessageEncode for SyncStepOneMessage {
 pub struct SyncStepTwoMessage {
     pub document_code: String,
     pub remote_state: Vec<u8>,
-    pub doc: Arc<Doc>,
 }
 
 impl MessageEncode for SyncStepTwoMessage {
-    fn encode(&self) -> Vec<u8> {
+    fn encode(&self, doc: &Doc) -> Vec<u8> {
         let mut buf = vec![];
         buf.write_string(&self.document_code);
         buf.write_var(0); // message type Sync
@@ -94,7 +92,7 @@ impl MessageEncode for SyncStepTwoMessage {
         buf.write_var(1); // sync step 2
         let state_vector = StateVector::decode_v1(&self.remote_state).unwrap();
 
-        let diff = self.doc.transact().encode_state_as_update_v1(&state_vector);
+        let diff = doc.transact().encode_state_as_update_v1(&state_vector);
         buf.write_buf(&diff);
 
         buf.to_vec()
@@ -106,8 +104,8 @@ pub struct UpdateMessage {
     pub update: Vec<u8>,
 }
 
-impl MessageEncode for UpdateMessage {
-    fn encode(&self) -> Vec<u8> {
+impl UpdateMessage {
+    pub fn encode(&self) -> Vec<u8> {
         let mut buf = vec![];
         buf.write_string(&self.document_code);
         buf.write_var(0); // message type Sync
@@ -118,15 +116,14 @@ impl MessageEncode for UpdateMessage {
     }
 }
 
-pub struct IncomingMessage<'a> {
+pub struct IncomingMessage {
     pub document_code: String,
     pub message_type: MessageType,
-    pub cur: Cursor<'a>,
 }
 
-impl<'a> MessageDecode<'a> for IncomingMessage<'a> {
-    fn decode(data: &'a [u8]) -> Self {
-        let mut cur: Cursor<'a> = Cursor::new(data);
+impl IncomingMessage {
+    pub fn decode(data: Vec<u8>) -> Self {
+        let mut cur = Cursor::new(&data);
         let document_code = cur.read_string().unwrap().to_string();
         let message_type = cur.read_var::<u8>().unwrap();
 
@@ -154,31 +151,28 @@ impl<'a> MessageDecode<'a> for IncomingMessage<'a> {
                 8 => MessageType::SyncStatus,
                 _ => panic!("Unknown message type"),
             },
-            cur,
         }
     }
 }
 
 impl MessageType {
-    pub fn handle_message(&self, info: &DocInfo, doc: Arc<Doc>, tag: &String) -> Option<Vec<u8>> {
+    pub fn handle_message(&self, document_code: &String, doc: &Doc, tag: &str) -> Option<Vec<u8>> {
         match self {
             MessageType::Auth(Ok(scope)) => {
                 let msg = SyncStepOneMessage {
-                    document_code: info.document_code.clone(),
-                    doc: Arc::clone(&doc),
+                    document_code: document_code.clone(),
                 };
 
-                Some(msg.encode())
+                Some(msg.encode(doc))
             }
             MessageType::Sync(step) => match step {
                 SyncStep::One(sv) => {
                     let msg = SyncStepTwoMessage {
-                        document_code: info.document_code.clone(),
+                        document_code: document_code.clone(),
                         remote_state: sv.clone(),
-                        doc: Arc::clone(&doc),
                     };
 
-                    Some(msg.encode())
+                    Some(msg.encode(doc))
                 }
                 SyncStep::Two(update) => {
                     let mut transact = doc.transact_mut();
