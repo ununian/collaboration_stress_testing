@@ -1,17 +1,14 @@
 use futures_util::{SinkExt, StreamExt};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
-use tokio::sync::{Mutex as AsyncMutex, RwLock};
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
-use tokio::time::sleep;
+
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use yrs::Doc;
 
-use crate::client::DocInfo;
-use crate::message::{
-    AuthenticationMessage, IncomingMessage, MessageDecode, MessageType, UpdateMessage,
-};
+use crate::message::{AuthenticationMessage, IncomingMessage, MessageType, UpdateMessage};
+use crate::DocInfo;
 
 type ArcTx = Arc<AsyncMutex<mpsc::UnboundedSender<Message>>>;
 // 定义回调函数的类型
@@ -38,7 +35,6 @@ pub async fn create_connection(
         while let Some(message) = read.next().await {
             match message {
                 Ok(msg) if msg.is_binary() => {
-                    println!("Received a message: {}", msg);
                     on_message(msg, tx_clone.clone()); // 调用回调函数
                 }
                 Err(e) => {
@@ -52,7 +48,6 @@ pub async fn create_connection(
     // 监听来自外部的消息并发送
     let _write_handle = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            println!("Sending message: {}", msg);
             write.send(msg).await.expect("Failed to send message");
         }
     });
@@ -68,14 +63,13 @@ pub async fn create_yjs_connection(
 ) {
     let document_code = info.document_code.clone();
     let on_name = name.clone();
-    let on_doc = Arc::clone(&doc);
 
     let callback = Arc::new(on_sync);
 
     let (message_tx, mut message_rx) = mpsc::unbounded_channel();
 
     let message_tx_clone = message_tx.clone();
-    let on_ws_message = move |msg: Message, tx: ArcTx| match msg {
+    let on_ws_message = move |msg: Message, _: ArcTx| match msg {
         Message::Binary(bin) => {
             let msg = IncomingMessage::decode(bin);
             message_tx_clone.send(msg).unwrap();
@@ -85,7 +79,7 @@ pub async fn create_yjs_connection(
         }
     };
 
-    let (tx, handle) = create_connection(&info.url, Box::new(on_ws_message)).await;
+    let (tx, _) = create_connection(&info.url, Box::new(on_ws_message)).await;
 
     {
         let info = info.clone();
@@ -105,11 +99,9 @@ pub async fn create_yjs_connection(
         let doc = doc.clone();
         let tx = tx.clone();
         let doc = doc.lock().await;
-        println!("{} 开始监听更新111", name);
-        println!("监听doc {:p}", &doc);
         subscripts.push(
             doc.observe_update_v1(move |_, event| {
-                println!("{} 观察到更新", name);
+                // println!("{} 观察到更新", name);
                 let msg = UpdateMessage {
                     update: event.update.clone(),
                     document_code: document_code.clone(),
@@ -128,10 +120,9 @@ pub async fn create_yjs_connection(
     }
 
     let doc_arc = Arc::clone(&doc);
-    let name = on_name.clone();
+    let name: String = on_name.clone();
     let document_code = document_code.clone();
     let callback = callback.clone();
-
     while let Some(msg) = message_rx.recv().await {
         let doc = doc_arc.lock().await;
         let response = msg.message_type.handle_message(&document_code, &doc, &name);
@@ -145,9 +136,8 @@ pub async fn create_yjs_connection(
 
         match msg.message_type {
             MessageType::Sync(crate::message::SyncStep::Two(_)) => {
-                println!("sync step 2 doc {:p}", &doc);
                 doc.observe_update_v1(|_, _| {
-                    println!("观察到更新22222");
+                    println!("文档 on update");
                 })
                 .unwrap();
                 callback(Arc::clone(&doc_arc));

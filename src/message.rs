@@ -1,19 +1,12 @@
-use std::{sync::Arc, vec};
-
-use futures_util::{stream::SplitSink, SinkExt};
-use tokio::net::TcpStream;
-use tokio_tungstenite::{tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use std::vec;
 use yrs::{
     encoding::{
         read::{Cursor, Read},
         write::Write,
     },
-    types::ToJson,
     updates::{decoder::Decode, encoder::Encode},
-    Doc, GetString, Map, MapRef, ReadTxn, StateVector, Text, TextRef, Transact, Update,
+    Doc, ReadTxn, StateVector, Transact, Update,
 };
-
-use crate::client::DocInfo;
 
 pub trait MessageEncode {
     fn encode(&self, doc: &Doc) -> Vec<u8>;
@@ -156,9 +149,9 @@ impl IncomingMessage {
 }
 
 impl MessageType {
-    pub fn handle_message(&self, document_code: &String, doc: &Doc, tag: &str) -> Option<Vec<u8>> {
+    pub fn handle_message(&self, document_code: &String, doc: &Doc, _tag: &str) -> Option<Vec<u8>> {
         match self {
-            MessageType::Auth(Ok(scope)) => {
+            MessageType::Auth(Ok(_)) => {
                 let msg = SyncStepOneMessage {
                     document_code: document_code.clone(),
                 };
@@ -183,40 +176,11 @@ impl MessageType {
                 SyncStep::Update(update) => {
                     let mut transact = doc.transact_mut();
                     transact.apply_update(Update::decode_v1(&update).unwrap());
-                    println!("{} 接收到 Diff ，更新文档", tag);
+                    // println!("{} 接收到 Diff ，更新文档", tag);
                     None
                 }
             },
             _ => None,
         }
     }
-}
-
-pub fn insert_content_message(info: &DocInfo, doc: &mut Doc) -> Result<Vec<u8>, String> {
-    let blocks = doc.get_or_insert_map("blocks");
-    let mut txn = doc.transact_mut();
-    let state = txn.state_vector();
-    let target_block = blocks.get(&txn, "4");
-    if target_block.is_none() {
-        return Err("Target block not found".to_string());
-    }
-    let target_block = target_block.unwrap().cast::<MapRef>().unwrap();
-
-    let text_prop = target_block
-        .get(&txn, "prop:text")
-        .unwrap()
-        .cast::<TextRef>()
-        .unwrap();
-
-    text_prop.insert(&mut txn, 0, "asd");
-
-    txn.commit();
-
-    let diff = txn.encode_diff_v1(&state);
-
-    Ok(UpdateMessage {
-        document_code: info.document_code.clone(),
-        update: diff,
-    }
-    .encode())
 }
