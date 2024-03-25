@@ -72,7 +72,9 @@ pub async fn create_yjs_connection(
     let on_ws_message = move |msg: Message, _: ArcTx| match msg {
         Message::Binary(bin) => {
             let msg = IncomingMessage::decode(bin);
-            message_tx_clone.send(msg).unwrap();
+            if !message_tx_clone.is_closed() {
+                message_tx_clone.send(msg).unwrap();
+            }
         }
         _ => {
             println!("未知消息类型");
