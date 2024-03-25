@@ -46,12 +46,6 @@ struct Cli {
 async fn main() {
     let cli = Cli::parse();
 
-    // let info = DocInfo {
-    //     token: "eE3dT77EJgPE-jx_Q-pRTC7Y2aQ".to_string(),
-    //     document_code: "Page::50324975576064::DEFAULT_PAGE".to_string(),
-    //     url: "ws://10.5.23.192:8896/aio".to_string(),
-    // };
-
     let mut handles = Vec::new();
 
     for code in cli.document_code {
