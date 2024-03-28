@@ -41,7 +41,7 @@ struct Cli {
     #[arg(long, default_value = "10", help = "每个连接写入的数量")]
     write_num: usize,
 
-    #[arg(long, default_value = "1000", help = "写入延迟, 毫秒")]
+    #[arg(long, default_value = "500", help = "写入延迟, 毫秒")]
     write_delay: usize,
 
     #[arg(
