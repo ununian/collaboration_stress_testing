@@ -109,6 +109,7 @@ impl UpdateMessage {
     }
 }
 
+#[derive(Debug)]
 pub struct IncomingMessage {
     pub document_code: String,
     pub message_type: MessageType,

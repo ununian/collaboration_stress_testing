@@ -8,7 +8,7 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use yrs::Doc;
 
 use crate::message::{AuthenticationMessage, IncomingMessage, MessageType, UpdateMessage};
-use crate::DocInfo;
+use crate::peer::DocInfo;
 
 type ArcTx = Arc<AsyncMutex<mpsc::UnboundedSender<Message>>>;
 // 定义回调函数的类型

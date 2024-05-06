@@ -3,6 +3,7 @@ mod create;
 mod id;
 mod message;
 mod model;
+mod new;
 mod peer;
 mod query;
 mod util;
