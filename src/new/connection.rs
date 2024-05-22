@@ -1,14 +1,10 @@
 use futures_util::{SinkExt, StreamExt};
-use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::sync::Mutex as AsyncMutex;
-use tokio::task::JoinHandle;
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use yrs::Doc;
 
-use crate::message::{AuthenticationMessage, IncomingMessage, MessageType, UpdateMessage};
+use crate::message::{AuthenticationMessage, IncomingMessage, MessageType};
 use crate::peer::DocInfo;
-use crate::util::to_hex_string;
 
 pub async fn new_create_connection(
     url: &str,
@@ -25,7 +21,7 @@ pub async fn new_create_connection(
 
     let _ = tokio::spawn(async move {
         while let Some(msg) = ws_sender_rx.recv().await {
-            println!("发送消息 {:?}", msg);
+            // println!("发送消息 {:?}", msg);
             write.send(msg).await.expect("Failed to send message");
         }
     });
@@ -36,12 +32,12 @@ pub async fn new_create_connection(
         while let Some(message) = read.next().await {
             match message {
                 Ok(msg) if msg.is_binary() => {
-                    match msg.clone() {
-                        Message::Binary(bin) => {
-                            println!("收到 WS 消息 \n{}\n -----", to_hex_string(&bin));
-                        }
-                        _ => {}
-                    }
+                    // match msg.clone() {
+                    //     Message::Binary(bin) => {
+                    //         // println!("收到 WS 消息 \n{}\n -----", to_hex_string(&bin));
+                    //     }
+                    //     _ => {}
+                    // }
                     let _ = tx_ws_receiver.send(msg);
                 }
                 Err(e) => {
@@ -56,50 +52,77 @@ pub async fn new_create_connection(
     (ws_sender, ws_receiver)
 }
 
-struct YjsConnection {
-    doc: Arc<AsyncMutex<Doc>>,
-    info: DocInfo,
-    ws_sender: mpsc::UnboundedSender<Message>,
-    ws_receiver: mpsc::UnboundedReceiver<Message>,
+pub struct YjsConnection {
+    pub info: DocInfo,
+    pub ws_sender: mpsc::UnboundedSender<Message>,
+    pub yjs_rx: UnboundedReceiver<IncomingMessage>,
 }
 
-pub async fn new_create_yjs_connection(info: &DocInfo) {
-    let (ws_sender, mut ws_receiver) = new_create_connection(&info.url).await;
+impl DocInfo {
+    pub async fn connection(&self) -> YjsConnection {
+        let (ws_sender, mut ws_receiver) = new_create_connection(&self.url).await;
 
-    let doc = Arc::new(AsyncMutex::new(Doc::new()));
-    let mut conn = YjsConnection {
-        doc: doc.clone(),
-        info: info.clone(),
-        ws_sender,
-        ws_receiver,
-    };
+        let (yjs_message_tx, yjs_message_rx) = mpsc::unbounded_channel::<IncomingMessage>();
+        let (emit_auth, mut on_auth) = mpsc::channel::<bool>(1);
 
-    let (yjs_message_tx, mut yjs_message_rx) = mpsc::unbounded_channel::<IncomingMessage>();
+        tokio::spawn(async move {
+            while let Some(msg) = ws_receiver.recv().await {
+                match msg {
+                    Message::Binary(bin) => {
+                        let msg = IncomingMessage::decode(bin);
+                        println!(
+                            "收到 Yjs 消息 [{} | {:?}]",
+                            msg.document_code, msg.message_type
+                        );
 
-    let a = tokio::spawn(async move {
-        while let Some(msg) = conn.ws_receiver.recv().await {
-            match msg {
-                Message::Binary(bin) => {
-                    let msg = IncomingMessage::decode(bin);
-                    println!("收到 Yjs 消息 {:?}", msg);
-                    if !yjs_message_tx.is_closed() {
-                        let _ = yjs_message_tx.send(msg);
+                        if !yjs_message_tx.is_closed() {
+                            match msg.message_type {
+                                MessageType::Auth(result) => {
+                                    if emit_auth.is_closed() {
+                                        continue;
+                                    }
+                                    if let Ok(scope) = result {
+                                        if scope == "read-write" {
+                                            let _ = emit_auth.send(true).await;
+                                            continue;
+                                        }
+                                    }
+                                    println!("认证失败");
+                                    let _ = emit_auth.send(false).await;
+                                }
+                                _ => {
+                                    let _ = yjs_message_tx.send(msg);
+                                }
+                            }
+                        } else {
+                            println!("通道已关闭");
+                            break;
+                        }
+                    }
+                    _ => {
+                        println!("未知消息类型");
                     }
                 }
-                _ => {
-                    println!("未知消息类型");
-                }
             }
+        });
+
+        let auth_message = AuthenticationMessage {
+            token: self.token.clone(),
+            document_code: self.document_code.clone(),
         }
-    });
+        .encode();
 
-    let auth_message = AuthenticationMessage {
-        token: info.token.clone(),
-        document_code: info.document_code.clone(),
+        let conn = YjsConnection {
+            info: self.clone(),
+            ws_sender,
+            yjs_rx: yjs_message_rx,
+        };
+
+        conn.ws_sender.send(Message::Binary(auth_message)).unwrap();
+
+        let auth_result = on_auth.recv().await;
+        println!("auth_result: {:?}", auth_result);
+
+        conn
     }
-    .encode();
-
-    conn.ws_sender.send(Message::Binary(auth_message)).unwrap();
-
-    a.await.expect("Task panicked");
 }

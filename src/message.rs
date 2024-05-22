@@ -171,13 +171,13 @@ impl MessageType {
                 SyncStep::Two(update) => {
                     let mut transact = doc.transact_mut();
                     transact.apply_update(Update::decode_v1(&update).unwrap());
-
+                    println!("Step2 接收到 Diff ，更新文档");
                     None
                 }
                 SyncStep::Update(update) => {
                     let mut transact = doc.transact_mut();
                     transact.apply_update(Update::decode_v1(&update).unwrap());
-                    // println!("{} 接收到 Diff ，更新文档", tag);
+                    println!("接收到 Diff ，更新文档");
                     None
                 }
             },
