@@ -70,10 +70,10 @@ impl DocInfo {
                 match msg {
                     Message::Binary(bin) => {
                         let msg = IncomingMessage::decode(bin);
-                        println!(
-                            "收到 Yjs 消息 [{} | {:?}]",
-                            msg.document_code, msg.message_type
-                        );
+                        // println!(
+                        //     "收到 Yjs 消息 [{} | {:?}]",
+                        //     msg.document_code, msg.message_type
+                        // );
 
                         if !yjs_message_tx.is_closed() {
                             match msg.message_type {
